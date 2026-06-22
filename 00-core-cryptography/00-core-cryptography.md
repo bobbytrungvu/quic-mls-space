@@ -4,8 +4,6 @@
 
 ## Digital Signatures
 
-## HMAC
-
 ## HKDF and Key Derivation Function
 
 ## Authenticated Encryption with Associated Data (AEAD)

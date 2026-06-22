@@ -1,6 +1,6 @@
 # MLS
 
-This section introduces Messaging Layer Security (MLS), the standardised protocol used to provide secure group communication. Firstly, an overview and motivation for MLS are discussed. Next, the TreeKEM group key agreement protocol is presented, followed by the MLS key schedule and message framing. These mechanisms form the foundation of the implementation developed in this project.
+This section introduces Messaging Layer Security (MLS), the standardised protocol used to provide secure group communication. Firstly, an overview and motivation for MLS are discussed. Next, the TreeKEM group key agreement protocol is presented, followed by the MLS key schedule and message structure. These mechanisms form the foundation of the implementation developed in this project. This section is based primarily on the MLS specification defined in RFC 9420 [Reference here]. Any material drawn from other sources is explicitly identified where relevant.
 
 ## Overview of MLS
 
@@ -14,11 +14,9 @@ At a high level, MLS consists of three main components. The first is the group s
 
 ## TreeKEM and the Ratchet Tree
 
-A central component of MLS is TreeKEM, a continuous group key agreement protocol that efficiently manages cryptographic secrets within a group. TreeKEM uses a binary tree structure, known as a ratchet tree, to manage and update group key material without requiring pairwise key updates between all participants.
+A central component of MLS is TreeKEM, a continuous group key agreement protocol that efficiently manages cryptographic secrets within a group. TreeKEM uses a binary tree structure, known as a ratchet tree, to manage and update group key material without requiring pairwise key updates between all participants. The term "ratchet" refers to a one-way key update process in which each new secret replaces the previous one, preventing earlier secrets from being derived from later values. This feature of MLS will be discussed at a later section.
 
-The following figure presents a simplified ratchet tree used for illustration. Actual MLS implementations maintain additional cryptographic state at each node and may contain substantially larger numbers of participants.
-
-In this example, participants A, B, C and D occupy the leaf nodes at the bottom of the tree. The intermediate nodes, N1 and N2, contain cryptographic secrets associated with subsets of group members. At the top of the tree, the root node contains the group secret from which the encryption keys used to protect group messages are ultimately derived.
+The following figure presents a simplified ratchet tree used for illustration. Actual MLS implementations maintain additional cryptographic state at each node and may contain substantially larger numbers of participants. In this example, participants A, B, C and D occupy the leaf nodes at the bottom of the tree. The intermediate nodes, N1 and N2, contain cryptographic secrets associated with subsets of group members. At the top of the tree, the root node represents the cryptographic state shared by the group. The secret associated with this node serves as the starting point for deriving the encryption keys used to protect group communications.
 
 ```mermaid
 graph TD
@@ -73,15 +71,17 @@ graph TD
 
 Figure: Simplified TreeKEM Update operation. When member A performs an Update operation, only the secrets on A’s direct path to the root are replaced. Other group members process the resulting Commit message to derive the updated tree state and enter a new epoch.
 
+While TreeKEM is responsible for maintaining and updating the group’s cryptographic state, the resulting root secret is only the starting point. The following section explains how MLS derives successive epoch secrets and message encryption keys through the MLS Key Schedule.
+
 ## MLS Key Schedule
 
-TreeKEM is responsible for maintaining and updating the cryptographic state of the group. However, the secrets stored within the ratchet tree are not used directly for message encryption. Instead, MLS uses a key schedule to derive a collection of specialised cryptographic secrets and encryption keys whenever the group enters a new epoch. This separation ensures that different protocol functions rely on separate derived keys, reducing the risk that the compromise or misuse of one key affects every other cryptographic function within the protocol.
+The root secret produced by TreeKEM is used as input to the MLS Key Schedule, which derives the cryptographic secrets and encryption keys required by the rest of the protocol. Whenever the group enters a new epoch, the key schedule generates a fresh set of secrets for different protocol functions. This separation helps ensure that the compromise of one key does not affect all other cryptographic operations.
 
 At a high level, the key schedule transforms the root secret produced by TreeKEM into a set of epoch secrets used for different purposes. These include secrets used for application message encryption, membership authentication and confirmation of group state consistency. By deriving separate secrets for separate functions, MLS maintains cryptographic separation between protocol components while ensuring that all group members share a consistent cryptographic state.
 
 The key schedule organises the lifetime of an MLS group into discrete periods called epochs. A new epoch is created whenever a Commit operation changes the cryptographic state of the group, such as when a member is added, removed or updates its key material. Each epoch has its own distinct set of cryptographic secrets and encryption keys. Therefore, as the group evolves, the keys used to protect communication are refreshed as well.
 
-The key schedule is based on HKDF, a key derivation function introduced in Section X.X. For the purposes of this project, the most important point is that the TreeKEM root secret is not used directly. Instead, it is used as input to the MLS key schedule, which expands it into the secrets needed by the rest of the protocol.
+The key schedule is based on HKDF, a key derivation function introduced in Section X.X. For the purposes of this project, the most important point is that the TreeKEM root secret is not used directly. Instead, it is used as input to the MLS Key Schedule, which expands it into the secrets needed by the rest of the protocol. In practice, the MLS Key Schedule combines the TreeKEM-derived secret with additional inputs defined by the protocol, but these details are omitted here for clarity.
 
 ```mermaid
 flowchart TD
@@ -90,7 +90,7 @@ flowchart TD
 
     Root --> KS
 
-    KS --> App["Application Secret"]
+    KS --> App["Encryption Secret"]
     KS --> Mem["Membership Key"]
     KS --> Conf["Confirmation Key"]
     KS --> Other["Other Epoch Secrets"]
@@ -98,11 +98,15 @@ flowchart TD
 
 Figure X: Derivation of MLS epoch secrets from the TreeKEM root secret.
 
-The application secret is used to derive the encryption keys that protect application messages exchanged between group members. The membership key contributes to the authentication of certain MLS protocol messages and helps verify group membership. The confirmation key is used to confirm that all group members have reached the same epoch after processing a Commit. These derived secrets form the basis for how MLS authenticates and encrypts messages sent within the group.
+The encryption secret is used to derive the encryption keys that protect application messages exchanged between group members. The membership key contributes to the authentication of certain MLS protocol messages and helps verify group membership. The confirmation key is used to confirm that all group members have reached the same epoch after processing a Commit. While the MLS Key Schedule determines which cryptographic secrets are available within a given epoch, these secrets only become useful when applied to actual protocol messages. The following section examines how MLS structures, authenticates and encrypts messages exchanged between group members.
 
 ## MLS Message Structure
 
-Application messages, proposals and commits are represented internally as MLS content objects. Before transmission, these contents are authenticated and encapsulated within either a `PublicMessage` or `PrivateMessage` structure. `PublicMessage` provides authentication and integrity protection but does not encrypt the message contents. It is primarily used for certain protocol messages such as proposals and commits. `PrivateMessage` extends this protection by encrypting message contents and sender information, providing confidentiality in addition to authenticity and integrity. Application messages are always transmitted as `PrivateMessage` objects, while proposals and commits may be transmitted as either `PublicMessage` or `PrivateMessage` objects depending on the deployment requirements. Since application data is always transmitted using `PrivateMessage`, the structure of `PrivateMessage` is examined in more detail below. Before being transmitted, MLS content is first encapsulated within an `AuthenticatedContent` object. This structure contains the message content together with the authentication information required to verify its origin and integrity. Depending on the message type, the resulting `AuthenticatedContent` may then be transmitted directly within a `PublicMessage` or encrypted within a `PrivateMessage`.
+Application messages, proposals and commits are represented internally as MLS content objects. Before transmission, these contents are authenticated and encapsulated within either a `PublicMessage` or `PrivateMessage` structure. 
+
+`PublicMessage` provides authentication and integrity protection but does not encrypt the message contents. It is primarily used for certain protocol messages such as proposals and commits. `PrivateMessage` extends this protection by encrypting message contents and sender information, providing confidentiality in addition to authenticity and integrity. Application messages are always transmitted as `PrivateMessage` objects, while proposals and commits may be transmitted as either `PublicMessage` or `PrivateMessage` objects depending on the deployment requirements. Since application data is always transmitted using `PrivateMessage`, the structure of `PrivateMessage` is examined in more detail below.
+
+Before transmission, MLS encapsulates message content within an `AuthenticatedContent` object, which binds the content to the authentication information required for integrity and sender verification. This authenticated content may be transmitted directly in a `PublicMessage` or encrypted and carried within a `PrivateMessage`. When encrypted, recipients can verify both the authenticity and integrity of the message after decryption.
 
 The `PrivateMessage` structure is detailed as below:
 
@@ -110,16 +114,18 @@ The `PrivateMessage` structure is detailed as below:
 | ----------------------- | ---------- | ------------------------- |
 | `group_id`              | No         | Ensure the message belongs to the intended group. |
 | `epoch`                 | No         | Ensure the message belongs to the current epoch. |
-| `content_type`          | No         | Specify the content type: application message, handshake message or proposal. |
-| `authenticated_data`    | No         | Application-supplied metadata, covered by MLS authentication mechanisms but not encrypted. Similar to AEAD's Additional Authenticated Data (AAD) |
+| `content_type`          | No         | Specify the content type: `application`, `proposal`, `commit`. |
+| `authenticated_data`    | No         | Application-supplied metadata, covered by MLS authentication mechanisms but not encrypted. Similar to AEAD's Additional Authenticated Data (AAD). |
 | `encrypted_sender_data` | Yes        | Contains encrypted sender information, allowing only group members to determine which member sent the message. |
 | `ciphertext`            | Yes        | The main AEAD ciphertext payload. Contains the encrypted `AuthenticatedContent` object, including the message content, authentication information and optional padding. |
 
-One thing worth highlighting, unlike many messaging protocols, MLS encrypts sender information separately using the `encrypted_sender_data` field, preventing external observers from learning which group member transmitted a particular message.
+Table X: Structure of MLS's `PrivateMessage`.
 
-Before encryption, MLS first constructs an `AuthenticatedContent` object containing the message content and associated authentication information. The resulting `AuthenticatedContent` is protected using MLS authentication mechanisms and, when transmitted as a PrivateMessage, is encrypted using an AEAD cipher. As a result, recipients can verify both the authenticity of the sender and the integrity of the message after decryption.
+A notable feature of MLS is the separate encryption of sender information through the `encrypted_sender_data` field. This prevents external observers from determining which group member transmitted a particular message, providing additional metadata protection beyond message confidentiality.
 
-## MLS Operations Relevant to this Project
+The message structures described above define how MLS data is authenticated and protected during transmission. However, the cryptographic state represented by a given epoch changes over time as members join, leave or refresh their key material. The following section examines the MLS operations that trigger these changes and cause the group to advance to new epochs.
+
+## MLS Operations Relevant to This Project
 
 MLS defines a number of protocol operations used to manage group membership and maintain the cryptographic state of the group. These operations are communicated through MLS proposals and commits, which collectively allow members to add participants, remove participants and update cryptographic material. Since the implementation developed in this project focuses on maintaining secure communication in space environments, the operations most relevant to this work are Add, Remove, Update and Commit.
 
@@ -140,3 +146,5 @@ The Update operation refreshes a member’s cryptographic contribution to the gr
 ### Commit Operation
 
 As described in the previous TreeKEM and Key Schedule sections, Commit messages are responsible for applying proposed changes to the group state. A Commit may contain one or more Add, Remove or Update proposals and represents the mechanism through which these changes become effective. Processing a Commit causes group members to update their ratchet trees, derive fresh epoch secrets and advance to a new epoch.
+
+MLS provides the cryptographic framework required for secure group communication, including group key management, message protection and membership operations. However, these mechanisms address only the security layer of the system, as the MLS protocol assumes the existence of an underlying transport capable of delivering messages between participants. Given that this project employs QUIC as that transport layer, the following section examines the design of QUIC and the transport characteristics most relevant to communication in space environments.
